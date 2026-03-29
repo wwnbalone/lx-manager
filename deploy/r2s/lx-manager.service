@@ -1,0 +1,18 @@
+[Unit]
+Description=LX Manager for LX Music
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/lx-manager
+ExecStart=/bin/sh /opt/lx-manager/scripts/start-r2s.sh
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
