@@ -6,6 +6,9 @@ const {
     URL_SELECT_WINDOW_MS,
     URL_MAX_CONCURRENT_REQUESTS,
     URL_MAX_CANDIDATES,
+    QUALITY_FILTER_STRICT,
+    QUALITY_FILTER_BITRATE_320K,
+    QUALITY_FILTER_BITRATE_128K,
 } = require('./lib/config');
 const { validateAudioUrlCandidate } = require('./lib/audio-validator');
 const { createLogger, startLogMaintenance, LOG_RULES } = require('./lib/logger');
@@ -17,44 +20,6 @@ const logger = createLogger('app');
 startLogMaintenance();
 let processHandlersRegistered = false;
 const runtimeInstanceId = `${process.pid}-${Date.now()}`;
-
-function captureRawBody(req, res, buffer, encoding) {
-    req.rawBody = buffer?.length
-        ? buffer.toString(encoding || 'utf8')
-        : '';
-}
-
-function getRawBodyPreview(rawBody, maxLength = 600) {
-    if (typeof rawBody !== 'string') return undefined;
-    const trimmed = rawBody.trim();
-    if (!trimmed) return undefined;
-    if (trimmed.length <= maxLength) return trimmed;
-    return `${trimmed.slice(0, maxLength)}... <truncated ${trimmed.length - maxLength} chars>`;
-}
-
-function normalizeRequestBody(body) {
-    let value = body;
-
-    for (let depth = 0; depth < 3; depth += 1) {
-        if (typeof value !== 'string') break;
-
-        const trimmed = value.trim();
-        if (!trimmed) break;
-        if (!/^[\[{"]/.test(trimmed)) break;
-
-        try {
-            value = JSON.parse(trimmed);
-        } catch {
-            break;
-        }
-    }
-
-    return value;
-}
-
-function getRequestBody(req) {
-    return normalizeRequestBody(req.body);
-}
 
 function getClientIp(req) {
     const forwardedFor = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
@@ -116,15 +81,50 @@ function normalizeLyricResult(result) {
     };
 }
 
+const LOSSLESS_QUALITIES = new Set(['flac', 'flac24bit', 'master', 'hires', 'atmos']);
+
+/**
+ * Determine whether the actual audio quality is lower than what was requested.
+ *
+ * @param {string} requestedQuality - The quality tier requested by the client (e.g. '128k', '320k', 'flac')
+ * @param {object|null|undefined} validationDetails - The `details` object from the validation result
+ * @returns {boolean} true if actual quality is below the requested tier
+ */
+function computeQualityMismatch(requestedQuality, validationDetails) {
+    if (!validationDetails || validationDetails.skipped) {
+        return false;
+    }
+
+    const { bitrateKbps, format, lossless } = validationDetails;
+
+    if (requestedQuality === '128k') {
+        if (format === 'unknown') return true;
+        if (bitrateKbps != null && bitrateKbps < QUALITY_FILTER_BITRATE_128K) return true;
+        return false;
+    }
+
+    if (requestedQuality === '320k') {
+        if (format === 'unknown') return true;
+        if (bitrateKbps != null) {
+            const threshold = QUALITY_FILTER_STRICT ? QUALITY_FILTER_BITRATE_320K : 72;
+            if (bitrateKbps < threshold) return true;
+        }
+        return false;
+    }
+
+    // Lossless qualities: flac, flac24bit, master, hires, atmos
+    if (LOSSLESS_QUALITIES.has(requestedQuality)) {
+        return lossless !== true;
+    }
+
+    return false;
+}
+
 function createApp() {
     const app = express();
 
     app.disable('x-powered-by');
-    app.use(express.json({
-        limit: '1mb',
-        strict: false,
-        verify: captureRawBody,
-    }));
+    app.use(express.json({ limit: '1mb' }));
 
     app.use((req, res, next) => {
         if (!req.path.startsWith('/proxy/')) {
@@ -132,7 +132,6 @@ function createApp() {
             return;
         }
 
-        const requestBody = getRequestBody(req);
         logger.info('proxy request received', {
             instanceId: runtimeInstanceId,
             method: req.method,
@@ -141,10 +140,10 @@ function createApp() {
             query: req.query,
             body: req.method === 'POST'
                 ? {
-                    source: requestBody?.source,
-                    quality: requestBody?.quality,
-                    keyword: requestBody?.keyword,
-                    musicInfo: summarizeRequestMusicInfo(requestBody?.musicInfo),
+                    source: req.body?.source,
+                    quality: req.body?.quality,
+                    keyword: req.body?.keyword,
+                    musicInfo: summarizeRequestMusicInfo(req.body?.musicInfo),
                 }
                 : undefined,
         });
@@ -168,7 +167,14 @@ function createApp() {
     });
 
     app.get('/health', (req, res) => {
-        res.json({ ok: true });
+        res.json({
+            ok: true,
+            qualityFilter: {
+                strict: QUALITY_FILTER_STRICT,
+                bitrateFloor320k: QUALITY_FILTER_BITRATE_320K,
+                bitrateFloor128k: QUALITY_FILTER_BITRATE_128K,
+            },
+        });
     });
 
     app.get(['/custom-source.js', '/subscription'], (req, res) => {
@@ -219,10 +225,9 @@ function createApp() {
 
     app.post('/proxy/url', async (req, res, next) => {
         try {
-            const body = getRequestBody(req);
-            const source = String(body?.source || '').trim() || undefined;
-            const quality = String(body?.quality || '128k').trim() || '128k';
-            const musicInfo = normalizeMusicInfo(body?.musicInfo, source);
+            const source = String(req.body?.source || '').trim() || undefined;
+            const quality = String(req.body?.quality || '128k').trim() || '128k';
+            const musicInfo = normalizeMusicInfo(req.body?.musicInfo, source);
 
             if (!musicInfo) {
                 res.status(400).json({ error: '缺少歌曲信息' });
@@ -287,9 +292,33 @@ function createApp() {
                 return;
             }
 
+            const validationDetails = response.validation?.details || null;
+            const mismatch = computeQualityMismatch(quality, validationDetails);
+
+            const meta = {
+                ...response.meta,
+                qualityMismatch: mismatch,
+                ...(mismatch && validationDetails ? {
+                    actualQuality: {
+                        format: validationDetails.format,
+                        bitrateKbps: validationDetails.bitrateKbps,
+                        lossless: validationDetails.lossless,
+                    }
+                } : {}),
+            };
+
+            if (mismatch) {
+                logger.warn('quality mismatch detected', {
+                    requestedQuality: quality,
+                    actualFormat: validationDetails?.format || null,
+                    actualBitrateKbps: validationDetails?.bitrateKbps || null,
+                    sourceFile: response.meta?.file || null,
+                });
+            }
+
             res.json({
                 ok: true,
-                meta: response.meta,
+                meta,
                 url,
             });
             logger.info('url resolved', {
@@ -304,6 +333,7 @@ function createApp() {
                 },
                 meta: response.meta,
                 validation: response.validation || null,
+                qualityMismatch: mismatch,
                 url,
             });
         } catch (error) {
@@ -313,9 +343,8 @@ function createApp() {
 
     app.post('/proxy/lyric', async (req, res, next) => {
         try {
-            const body = getRequestBody(req);
-            const source = String(body?.source || 'local').trim() || 'local';
-            const musicInfo = normalizeMusicInfo(body?.musicInfo, source);
+            const source = String(req.body?.source || 'local').trim() || 'local';
+            const musicInfo = normalizeMusicInfo(req.body?.musicInfo, source);
 
             if (!musicInfo) {
                 res.status(400).json({ error: '缺少歌曲信息' });
@@ -357,9 +386,8 @@ function createApp() {
 
     app.post('/proxy/pic', async (req, res, next) => {
         try {
-            const body = getRequestBody(req);
-            const source = String(body?.source || 'local').trim() || 'local';
-            const musicInfo = normalizeMusicInfo(body?.musicInfo, source);
+            const source = String(req.body?.source || 'local').trim() || 'local';
+            const musicInfo = normalizeMusicInfo(req.body?.musicInfo, source);
 
             if (!musicInfo) {
                 res.status(400).json({ error: '缺少歌曲信息' });
@@ -411,9 +439,6 @@ function createApp() {
             query: req.query,
             error: error.message,
             stack: error.stack,
-            rawBodyPreview: error.type === 'entity.parse.failed'
-                ? getRawBodyPreview(req.rawBody)
-                : undefined,
         });
         res.status(500).json({
             error: error.message || '服务器内部错误',
@@ -479,7 +504,5 @@ if (require.main === module) {
 module.exports = {
     createApp,
     startServer,
-    __internal: {
-        normalizeRequestBody,
-    },
+    computeQualityMismatch,
 };

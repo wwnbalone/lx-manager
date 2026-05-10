@@ -38,6 +38,12 @@ endef
 APP_SRC_DIR:=$(CURDIR)/..
 
 define Package/$(PKG_NAME)/install
+	@for module in express axios https-proxy-agent node-cron; do \
+		if [ ! -d "$(APP_SRC_DIR)/node_modules/$$module" ]; then \
+			echo "ERROR: missing $(APP_SRC_DIR)/node_modules/$$module. Run 'npm ci --omit=dev' in $(APP_SRC_DIR) before building $(PKG_NAME)." >&2; \
+			exit 1; \
+		fi; \
+	done
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./root/etc/config/lx-manager $(1)/etc/config/lx-manager
 
@@ -54,6 +60,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DATA) $(APP_SRC_DIR)/app.js $(1)/usr/libexec/lx-manager/app.js
 	$(INSTALL_DATA) $(APP_SRC_DIR)/updater.js $(1)/usr/libexec/lx-manager/updater.js
 	$(INSTALL_DATA) $(APP_SRC_DIR)/package.json $(1)/usr/libexec/lx-manager/package.json
+	$(INSTALL_DATA) $(APP_SRC_DIR)/package-lock.json $(1)/usr/libexec/lx-manager/package-lock.json
 	$(CP) $(APP_SRC_DIR)/lib $(1)/usr/libexec/lx-manager/
 	$(CP) $(APP_SRC_DIR)/sources $(1)/usr/libexec/lx-manager/
 	$(CP) $(APP_SRC_DIR)/node_modules $(1)/usr/libexec/lx-manager/

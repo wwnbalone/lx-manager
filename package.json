@@ -1,23 +1,14 @@
 {
   "name": "lx-manager",
   "version": "1.0.0",
-  "description": "Local aggregation service and self-hosted custom source manager for LX Music",
+  "description": "",
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
     "update": "node updater.js",
     "test": "node --test"
   },
-  "keywords": [
-    "lx-music",
-    "lxmusic",
-    "custom-source",
-    "music-source",
-    "nodejs",
-    "openwrt",
-    "istoreos",
-    "r2s"
-  ],
+  "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
@@ -26,5 +17,8 @@
     "express": "^5.2.1",
     "https-proxy-agent": "^5.0.1",
     "node-cron": "^4.2.1"
+  },
+  "devDependencies": {
+    "fast-check": "^4.1.1"
   }
 }

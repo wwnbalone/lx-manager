@@ -15,6 +15,30 @@ CONFIG_FILE="/etc/config/lx-manager"
 CONTROLLER_DIR="/usr/lib/lua/luci/controller"
 CBI_DIR="/usr/lib/lua/luci/model/cbi"
 
+ensure_runtime_dependencies() {
+    if [ -f "$APP_DIR/node_modules/express/package.json" ]; then
+        echo "Runtime Node.js dependencies are present."
+        return 0
+    fi
+
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "Missing runtime dependencies under $APP_DIR/node_modules." >&2
+        echo "Install npm first (for example: opkg install npm), then run:" >&2
+        echo "  cd $APP_DIR && npm ci --omit=dev" >&2
+        exit 1
+    fi
+
+    echo "Bundled node_modules are incomplete; installing runtime dependencies with npm..."
+    (
+        cd "$APP_DIR"
+        if [ -f package-lock.json ]; then
+            npm ci --omit=dev
+        else
+            npm install --omit=dev
+        fi
+    )
+}
+
 need_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
         echo "Missing required command: $1" >&2
@@ -34,6 +58,10 @@ if ! command -v curl >/dev/null 2>&1; then
     echo "Warning: curl is not installed. Source update will not work until curl is available." >&2
 fi
 
+if ! command -v npm >/dev/null 2>&1; then
+    echo "Warning: npm is not installed. If the repository copy does not include a full node_modules tree, installation will stop with guidance." >&2
+fi
+
 echo "Installing LX Manager LuCI plugin files..."
 
 mkdir -p "$APP_DIR" "$CONTROLLER_DIR" "$CBI_DIR" /etc/config /etc/init.d
@@ -43,6 +71,11 @@ rm -rf "$APP_DIR/lib" "$APP_DIR/sources" "$APP_DIR/node_modules"
 cp "$REPO_DIR/app.js" "$APP_DIR/app.js"
 cp "$REPO_DIR/updater.js" "$APP_DIR/updater.js"
 cp "$REPO_DIR/package.json" "$APP_DIR/package.json"
+if [ -f "$REPO_DIR/package-lock.json" ]; then
+    cp "$REPO_DIR/package-lock.json" "$APP_DIR/package-lock.json"
+else
+    rm -f "$APP_DIR/package-lock.json"
+fi
 cp -R "$REPO_DIR/lib" "$APP_DIR/lib"
 cp -R "$REPO_DIR/sources" "$APP_DIR/sources"
 cp -R "$REPO_DIR/node_modules" "$APP_DIR/node_modules"
@@ -65,6 +98,8 @@ rm -rf /tmp/luci-modulecache 2>/dev/null || true
 if [ -x "$INITD_FILE" ]; then
     "$INITD_FILE" enable >/dev/null 2>&1 || true
 fi
+
+ensure_runtime_dependencies
 
 echo "Install complete."
 echo "Open LuCI -> Services -> LX Manager"

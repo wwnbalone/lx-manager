@@ -14,10 +14,10 @@ Install the runtime dependencies on iStoreOS first:
 
 ```sh
 opkg update
-opkg install node curl
+opkg install node npm curl
 ```
 
-If `node` is already installed from iStore, you can skip it.
+If `node` is already installed from iStore, only add `npm` and `curl` as needed.
 
 ## 2. Copy The Project To The Router
 
@@ -43,6 +43,8 @@ The script installs:
 - LuCI CBI page into `/usr/lib/lua/luci/model/cbi`
 - service script into `/etc/init.d/lx-manager`
 - default config into `/etc/config/lx-manager` if it does not already exist
+
+If the copied repository does not already contain a complete `node_modules/` tree, the installer now runs `npm ci --omit=dev` automatically on the router.
 
 ## 4. Configure In LuCI
 
